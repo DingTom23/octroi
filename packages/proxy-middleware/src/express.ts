@@ -1,0 +1,172 @@
+import type { NextFunction, Request, RequestHandler, Response } from 'express';
+import { type PaymentPayload, type PaymentRequiredResponse, X402_HEADERS } from '@crawlpay/types';
+import { DefaultBotClassifier } from './classifier';
+import { HttpFacilitatorClient, type FacilitatorClient } from './facilitator';
+import { GlobPricingResolver, type PricingResolver } from './pricing';
+import { encodeReceiptHeader } from './receipts';
+import type { CrawlPayMiddlewareConfig, ErrorEvent } from './types';
+
+/**
+ * Validity window published in 402 offers (seconds). A crawler's Soroban
+ * authorization entry must settle within this window, so it is kept short.
+ */
+const OFFER_VALIDITY_WINDOW_SECONDS = 60;
+
+const PAYMENT_HEADER = X402_HEADERS.payment.toLowerCase();
+
+/**
+ * CrawlPay's publisher middleware.
+ *
+ * Composition (left → right):
+ *
+ *   classifier  →  pricing  →  facilitator verify  →  receipt header  →  next()
+ *
+ * Each step is pluggable via `CrawlPayMiddlewareConfig`. The default wiring uses
+ * heuristic bot classification, glob-based pricing, and an HTTP facilitator
+ * client. The facilitator owns settlement and receipt signing; the middleware
+ * relays the payment and returns the signed receipt to the crawler.
+ */
+export function crawlpay(config: CrawlPayMiddlewareConfig): RequestHandler {
+  const classifier = config.botClassifier ?? new DefaultBotClassifier();
+  const pricingResolver: PricingResolver =
+    config.pricingResolver ??
+    new GlobPricingResolver(config.pricingRules ?? [], config.defaultPrice);
+  const facilitator: FacilitatorClient =
+    config.facilitator ?? new HttpFacilitatorClient(config.facilitatorUrl);
+
+  const middleware: RequestHandler = async (req: Request, res: Response, next: NextFunction) => {
+    const fullUrl = `${req.protocol}://${req.get('host') ?? 'localhost'}${req.originalUrl}`;
+    const startedAt = Date.now();
+
+    // 1. Classify
+    let classification;
+    try {
+      classification = classifier.classify({
+        method: req.method,
+        url: req.originalUrl,
+        headers: req.headers,
+        ip: req.ip,
+      });
+    } catch (err) {
+      await emitError(config, fullUrl, err, 'classify');
+      return next(err);
+    }
+
+    if (!classification.isCrawler) {
+      await config.onSkip?.({ url: fullUrl, reason: 'human', classification });
+      return next();
+    }
+
+    // 2. Price
+    const pricing = pricingResolver.resolve(req.originalUrl, req.method);
+    if (!pricing || pricing.priceAtomic === 0n) {
+      await config.onSkip?.({ url: fullUrl, reason: 'free-path', classification });
+      return next();
+    }
+
+    const paymentHeaderRaw = req.headers[PAYMENT_HEADER];
+    const paymentHeader = Array.isArray(paymentHeaderRaw) ? paymentHeaderRaw[0] : paymentHeaderRaw;
+
+    // 3. No payment yet — emit a 402 offer
+    if (!paymentHeader) {
+      res.status(402).json(buildOffer(config, fullUrl, pricing.priceAtomic.toString()));
+      return;
+    }
+
+    // 4. Decode payload and forward to the facilitator
+    let payload: PaymentPayload;
+    try {
+      payload = decodePaymentPayload(paymentHeader);
+    } catch {
+      res.status(402).json({ x402Version: 1, error: 'invalid_payload' });
+      return;
+    }
+
+    let result;
+    try {
+      result = await facilitator.verify({
+        publisherId: config.publisherId,
+        payTo: config.publisherWallet,
+        resource: fullUrl,
+        network: config.network,
+        asset: config.asset,
+        maxAmountRequired: pricing.priceAtomic.toString(),
+        payment: payload,
+      });
+    } catch (err) {
+      await emitError(config, fullUrl, err, 'verify');
+      return next(err);
+    }
+
+    if (!result.ok) {
+      res.status(402).json({ x402Version: 1, error: result.error.code });
+      return;
+    }
+
+    // 5. Return the signed receipt to the crawler and downstream handlers.
+    const { receipt } = result;
+    res.setHeader(X402_HEADERS.response, encodeReceiptHeader(receipt));
+    res.locals.crawlpayReceipt = receipt;
+
+    await config.onPayment?.({
+      url: fullUrl,
+      from: receipt.from,
+      amount: pricing.priceAtomic,
+      receipt,
+      settlementRef: receipt.onchainTxHash ?? receipt.mppSessionRef?.sessionId ?? '',
+      durationMs: Date.now() - startedAt,
+    });
+
+    return next();
+  };
+
+  return middleware;
+}
+
+function buildOffer(
+  config: CrawlPayMiddlewareConfig,
+  resource: string,
+  maxAmountRequired: string,
+): PaymentRequiredResponse {
+  return {
+    x402Version: 1,
+    accepts: [
+      {
+        scheme: 'exact',
+        network: config.network,
+        maxAmountRequired,
+        resource,
+        description: config.description,
+        payTo: config.publisherWallet,
+        asset: config.asset,
+        maxTimeoutSeconds: OFFER_VALIDITY_WINDOW_SECONDS,
+        extra: {
+          settlement: 'x402',
+          feeSponsored: true,
+          crawlpay_publisher_id: config.publisherId,
+          crawlpay_facilitator: config.facilitatorUrl,
+          ...(config.crawlpayAgentId ? { crawlpay_agent_id: config.crawlpayAgentId } : {}),
+        },
+      },
+    ],
+  };
+}
+
+function decodePaymentPayload(headerValue: string): PaymentPayload {
+  const json = Buffer.from(headerValue, 'base64').toString('utf-8');
+  return JSON.parse(json) as PaymentPayload;
+}
+
+async function emitError(
+  config: CrawlPayMiddlewareConfig,
+  url: string,
+  err: unknown,
+  phase: ErrorEvent['phase'],
+): Promise<void> {
+  const error = err instanceof Error ? err : new Error(String(err));
+  try {
+    await config.onError?.({ url, error, phase });
+  } catch {
+    // Don't compound errors thrown by the user's handler.
+  }
+}

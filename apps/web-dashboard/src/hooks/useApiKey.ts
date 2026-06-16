@@ -1,0 +1,65 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+
+const STORAGE_KEY = 'crawlpay_api_key';
+const EVENT = 'crawlpay:apikey';
+
+/**
+ * API-key session. Publishers authenticate with the key returned once at
+ * onboarding (POST /publishers). It lives in localStorage and is sent as a
+ * Bearer token on the probe and any publisher mutation. Dashboards render in
+ * read mode without a key.
+ *
+ * The custom event keeps every mounted hook in sync across the tab, and the
+ * `storage` event keeps other tabs in sync.
+ */
+export interface ApiKeyState {
+  apiKey: string | null;
+  /** True until localStorage has been read on mount. */
+  hydrated: boolean;
+  setApiKey: (key: string) => void;
+  clearApiKey: () => void;
+}
+
+function read(): string | null {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage.getItem(STORAGE_KEY);
+}
+
+export function useApiKey(): ApiKeyState {
+  const [apiKey, setKey] = useState<string | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    setKey(read());
+    setHydrated(true);
+
+    function sync() {
+      setKey(read());
+    }
+    window.addEventListener('storage', sync);
+    window.addEventListener(EVENT, sync);
+    return () => {
+      window.removeEventListener('storage', sync);
+      window.removeEventListener(EVENT, sync);
+    };
+  }, []);
+
+  const setApiKey = useCallback((key: string) => {
+    window.localStorage.setItem(STORAGE_KEY, key);
+    window.dispatchEvent(new Event(EVENT));
+  }, []);
+
+  const clearApiKey = useCallback(() => {
+    window.localStorage.removeItem(STORAGE_KEY);
+    window.dispatchEvent(new Event(EVENT));
+  }, []);
+
+  return { apiKey, hydrated, setApiKey, clearApiKey };
+}
+
+/** Non-reactive read for fetch helpers that need the current key. */
+export function getStoredApiKey(): string | null {
+  return read();
+}

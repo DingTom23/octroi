@@ -1,0 +1,68 @@
+import type {
+  AssetId,
+  AtomicUsdc,
+  CrawlPayReceipt,
+  Network,
+  PricingRule,
+  StellarAddress,
+} from '@crawlpay/types';
+import type { BotClassifier, ClassificationResult } from './classifier';
+import type { FacilitatorClient } from './facilitator';
+import type { PricingResolver } from './pricing';
+
+export interface CrawlPayMiddlewareConfig {
+  /** Publisher catalog identifier (e.g. "pub_abc123"). */
+  publisherId: string;
+  /** Publisher's payout G-address. */
+  publisherWallet: StellarAddress;
+  /** USDC asset identifier (`USDC:ISSUER`) the publisher is paid in. */
+  asset: AssetId;
+  /** Network the publisher wants to be paid on. */
+  network: Network;
+  /** Base URL of the facilitator that verifies payments and signs receipts. */
+  facilitatorUrl: string;
+  /** Default per-request price when no pricing rule matches. */
+  defaultPrice: AtomicUsdc;
+  /** Per-path glob pricing rules. Evaluated in declaration order; first match wins. */
+  pricingRules?: PricingRule[];
+  /** Optional crawlpay_registry agent id; surfaced in the 402 offer. */
+  crawlpayAgentId?: string;
+  /** Description shown in the 402 offer (e.g. "Premium research articles"). */
+  description?: string;
+
+  // ── Pluggable dependencies ─────────────────────────────────────
+  /** Override the default heuristic bot classifier. */
+  botClassifier?: BotClassifier;
+  /** Override the default facilitator client (HTTP to `facilitatorUrl`). */
+  facilitator?: FacilitatorClient;
+  /** Override the default pricing resolver (replaces pricingRules + defaultPrice). */
+  pricingResolver?: PricingResolver;
+
+  // ── Observability hooks ────────────────────────────────────────
+  onPayment?: (event: PaymentEvent) => void | Promise<void>;
+  onSkip?: (event: SkipEvent) => void | Promise<void>;
+  onError?: (event: ErrorEvent) => void | Promise<void>;
+}
+
+export interface PaymentEvent {
+  url: string;
+  /** Crawler G-address that paid (the receipt `from`). */
+  from: StellarAddress;
+  amount: AtomicUsdc;
+  receipt: CrawlPayReceipt;
+  /** On-chain tx hash (x402) or session id (mpp), whichever the receipt carries. */
+  settlementRef: string;
+  durationMs: number;
+}
+
+export interface SkipEvent {
+  url: string;
+  reason: 'human' | 'free-path';
+  classification?: ClassificationResult;
+}
+
+export interface ErrorEvent {
+  url: string;
+  error: Error;
+  phase: 'classify' | 'price' | 'verify' | 'settle';
+}
