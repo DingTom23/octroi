@@ -1,7 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Keypair } from '@stellar/stellar-base';
 import { randomBytes, createHash } from 'node:crypto';
+import type { NextFunction, Request, Response } from 'express';
+import type { StellarAddress, AtomicUsdc } from '@octroi/types';
 import { Ed25519SignatureVerifier } from '../signature-verifier';
+import { octroi } from '../express';
 
 /** Compute the JWK Thumbprint (base64url) of an Ed25519 public key. */
 function computeKeyid(publicKey: Uint8Array): string {
@@ -184,5 +187,90 @@ describe('Ed25519SignatureVerifier', () => {
     const result = verifier.verify('other.com', headers);
     expect(result.valid).toBe(false);
     expect(result.error).toBe('signature_mismatch');
+  });
+});
+
+describe('middleware signature verification', () => {
+  const keypair = Keypair.random();
+  const keyid = computeKeyid(keypair.rawPublicKey());
+  const publicKeyB64 = Buffer.from(keypair.rawPublicKey()).toString('base64url');
+
+  function createMockReq(authority: string, headers: Record<string, string> = {}) {
+    return {
+      method: 'GET',
+      originalUrl: '/article',
+      protocol: 'http',
+      ip: '127.0.0.1',
+      headers: { host: authority, 'user-agent': 'GPTBot/1.0', ...headers },
+      get: (name: string) => headers[name] ?? (name === 'host' ? authority : undefined),
+    } as unknown as Request;
+  }
+
+  function createMockRes() {
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn().mockReturnThis(),
+      setHeader: vi.fn(),
+      locals: {},
+    } as unknown as Response;
+    return res;
+  }
+
+  it('rejects crawler requests without valid signature when verifier is configured', () => {
+    const sigVerifier = new Ed25519SignatureVerifier({ knownKeys: { [keyid]: publicKeyB64 } });
+    const middleware = octroi({
+      publisherId: 'test',
+      publisherWallet: 'GADEW5MW5OFWO5XVE4JXVBM3QDA5UEKBY3K4OGJMOCYVDLSOIGE2SC6L' as StellarAddress,
+      asset: 'USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+      network: 'stellar-testnet',
+      facilitatorUrl: 'http://localhost:3001',
+      defaultPrice: 1000n as AtomicUsdc,
+      signatureVerifier: sigVerifier,
+    });
+
+    const req = createMockReq('example.com');
+    const res = createMockRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    middleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(402);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: 'invalid_signature' }));
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('passes through crawler requests with valid signature', () => {
+    const sigVerifier = new Ed25519SignatureVerifier({ knownKeys: { [keyid]: publicKeyB64 } });
+    const facilitator = {
+      verify: vi.fn().mockResolvedValue({
+        ok: true,
+        receipt: { from: 'test', amount: '1000' },
+      }),
+    };
+    const middleware = octroi({
+      publisherId: 'test',
+      publisherWallet: 'GADEW5MW5OFWO5XVE4JXVBM3QDA5UEKBY3K4OGJMOCYVDLSOIGE2SC6L' as StellarAddress,
+      asset: 'USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+      network: 'stellar-testnet',
+      facilitatorUrl: 'http://localhost:3001',
+      defaultPrice: 1000n as AtomicUsdc,
+      signatureVerifier: sigVerifier,
+      facilitator,
+    });
+
+    const signed = signRequest(keypair, 'example.com');
+    const req = createMockReq('example.com', {
+      signature: signed.signature,
+      'signature-input': signed.signatureInput,
+    });
+    const res = createMockRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    middleware(req, res, next);
+
+    // Should get a 402 x402 offer (not invalid_signature), meaning signature check passed
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ x402Version: 1, accepts: expect.any(Array) }),
+    );
   });
 });
