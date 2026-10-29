@@ -14,6 +14,7 @@ export {
   NoPayableOfferError,
   PaymentRejectedError,
   ReceiptVerificationError,
+  UnsupportedOfferError,
 } from './types';
 export { InMemoryBudgetTracker, UnlimitedBudgetTracker, type BudgetTracker } from './budget';
 export { MemoryReceiptStore, type ReceiptFilter, type ReceiptStore } from './receipt-store';

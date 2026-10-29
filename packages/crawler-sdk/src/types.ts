@@ -19,8 +19,11 @@ export interface OctroiClientConfig {
   network: Network;
   /** Soroban RPC endpoint. Required unless a custom `paymentSigner` is supplied. */
   sorobanRpcUrl?: string;
-  /** USDC asset (`CODE:ISSUER`). Required for `getBalance` with the default signer. */
-  usdcAsset?: AssetId;
+  /**
+   * USDC asset (`CODE:ISSUER`) the crawler is willing to pay with. Offers for
+   * any other asset are refused before signing. Required for paying.
+   */
+  usdcAsset: AssetId;
   /** Hard per-request cap. The SDK refuses to pay more than this for any URL. */
   maxPerRequest: AtomicUsdc;
   /** Optional daily spend cap across all publishers (UTC day). */
@@ -86,7 +89,7 @@ export interface PaymentEvent {
 
 export interface SkipEvent {
   url: string;
-  reason: 'cache' | 'free-endpoint' | 'price-cap' | 'budget-cap';
+  reason: 'cache' | 'free-endpoint' | 'price-cap' | 'budget-cap' | 'unsupported-offer';
   /** Set for cache + free-endpoint outcomes. */
   cached?: boolean;
   /** Set for price-cap and budget-cap. */
@@ -134,6 +137,21 @@ export class NoPayableOfferError extends Error {
   constructor(public readonly url: string) {
     super(`No payable x402 option in the 402 offer from ${url}`);
     this.name = 'NoPayableOfferError';
+  }
+}
+
+export class UnsupportedOfferError extends Error {
+  constructor(
+    public readonly url: string,
+    public readonly expectedAsset: AssetId,
+    public readonly expectedNetwork: Network,
+    public readonly offered: ReadonlyArray<{ asset: AssetId; network: Network }>,
+  ) {
+    const seen = offered.length
+      ? ` (offered: ${offered.map((o) => `${o.asset} on ${o.network}`).join(', ')})`
+      : '';
+    super(`No offer from ${url} matches asset ${expectedAsset} on ${expectedNetwork}${seen}`);
+    this.name = 'UnsupportedOfferError';
   }
 }
 

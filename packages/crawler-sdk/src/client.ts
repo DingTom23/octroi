@@ -17,9 +17,9 @@ import { DefaultRetryPolicy, type RetryPolicy } from './retry';
 import {
   BudgetExhaustedError,
   MaxPriceExceededError,
-  NoPayableOfferError,
   PaymentRejectedError,
   ReceiptVerificationError,
+  UnsupportedOfferError,
   type OctroiClientConfig,
   type ErrorEvent,
   type FetchOpts,
@@ -146,8 +146,18 @@ export class OctroiClient {
         throw err;
       }
 
-      const requirement = pickRequirement(offer.accepts);
-      if (!requirement) throw new NoPayableOfferError(url);
+      const requirement = pickRequirement(
+        offer.accepts,
+        this.#config.usdcAsset,
+        this.#config.network,
+      );
+      if (!requirement) {
+        const offered = (offer.accepts ?? [])
+          .filter((r) => r.scheme === 'exact' && r.extra?.settlement === 'x402')
+          .map((r) => ({ asset: r.asset, network: r.network }));
+        await this.#emitSkip({ url, reason: 'unsupported-offer' });
+        throw new UnsupportedOfferError(url, this.#config.usdcAsset, this.#config.network, offered);
+      }
 
       const priceAtomic = atomicUsdc(BigInt(requirement.maxAmountRequired));
 
@@ -356,8 +366,20 @@ async function parseBody(response: Response): Promise<unknown> {
   return response.text();
 }
 
-function pickRequirement(accepts: PaymentRequirement[]): PaymentRequirement | null {
-  return accepts.find((r) => r.scheme === 'exact' && r.extra?.settlement === 'x402') ?? null;
+function pickRequirement(
+  accepts: PaymentRequirement[],
+  usdcAsset: OctroiClientConfig['usdcAsset'],
+  network: OctroiClientConfig['network'],
+): PaymentRequirement | null {
+  return (
+    accepts.find(
+      (r) =>
+        r.scheme === 'exact' &&
+        r.extra?.settlement === 'x402' &&
+        r.asset === usdcAsset &&
+        r.network === network,
+    ) ?? null
+  );
 }
 
 function encodePaymentPayload(payload: X402PaymentPayload): string {
