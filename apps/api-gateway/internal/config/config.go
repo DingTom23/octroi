@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -11,6 +13,10 @@ type Config struct {
 	Network        string
 	DatabaseURL    string
 	FacilitatorURL string
+	// TrustedProxies is the list of proxy IPs/CIDRs whose forwarding headers
+	// may be believed. An empty list means trust none, so ClientIP falls back
+	// to the TCP peer address.
+	TrustedProxies []string
 }
 
 var supportedNetworks = map[string]bool{
@@ -37,10 +43,42 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("OCTROI_NETWORK %q is not supported", network)
 	}
 
+	trustedProxies, err := parseTrustedProxies(os.Getenv("TRUSTED_PROXIES"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		Port:           port,
 		Network:        network,
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
 		FacilitatorURL: os.Getenv("NEXT_PUBLIC_FACILITATOR_URL"),
+		TrustedProxies: trustedProxies,
 	}, nil
+}
+
+// parseTrustedProxies accepts a comma-separated list of IPs and CIDRs.
+// Empty (or whitespace) means trust no proxy. The returned slice is never nil
+// so it can be passed to gin.Engine.SetTrustedProxies directly.
+func parseTrustedProxies(raw string) ([]string, error) {
+	out := []string{}
+	if strings.TrimSpace(raw) == "" {
+		return out, nil
+	}
+	for _, part := range strings.Split(raw, ",") {
+		value := strings.TrimSpace(part)
+		if value == "" {
+			return nil, fmt.Errorf("TRUSTED_PROXIES contains an empty entry")
+		}
+		if net.ParseIP(value) != nil {
+			out = append(out, value)
+			continue
+		}
+		if _, _, err := net.ParseCIDR(value); err == nil {
+			out = append(out, value)
+			continue
+		}
+		return nil, fmt.Errorf("TRUSTED_PROXIES entry %q is not an IP or CIDR", value)
+	}
+	return out, nil
 }

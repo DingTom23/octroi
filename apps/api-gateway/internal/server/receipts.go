@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -121,5 +122,6 @@ func (s *server) verifyReceipt(c *gin.Context) {
 }
 
 func serverError(c *gin.Context, err error) {
-	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error", "message": err.Error()})
+	log.Printf("request failed: %v", err)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error"})
 }

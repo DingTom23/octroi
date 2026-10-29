@@ -14,11 +14,17 @@ in `internal/receipt`).
 
 ```bash
 cd apps/api-gateway
-go run .            # reads API_PORT, OCTROI_NETWORK, DATABASE_URL, NEXT_PUBLIC_FACILITATOR_URL
+go run .            # reads API_PORT, OCTROI_NETWORK, DATABASE_URL, NEXT_PUBLIC_FACILITATOR_URL, TRUSTED_PROXIES
 ```
 
 Without `DATABASE_URL` it uses an in-memory store (demo only). With it, it
 connects to Postgres via pgx.
+
+`TRUSTED_PROXIES` is a comma-separated list of proxy IPs/CIDRs. Only those
+peers may set `X-Forwarded-For`/`X-Real-IP`; leave it empty when the gateway is
+exposed directly so `ClientIP` uses the TCP peer address. Requests that exceed
+the server timeouts are cut off, and unexpected failures are logged server-side
+while the client receives only `{"error":"internal_error"}`.
 
 ## Develop
 
