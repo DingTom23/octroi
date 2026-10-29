@@ -46,6 +46,7 @@ func New(d Deps) *gin.Engine {
 	r.POST("/publishers", s.createPublisher)
 	r.GET("/publishers/:id", s.getPublisher)
 	r.GET("/publishers/:id/receipts", s.publisherReceipts)
+	r.GET("/publishers/:id/receipts/export", s.exportPublisherReceipts)
 	r.POST("/publishers/:id/probe", s.probePublisher)
 
 	r.GET("/crawlers/:wallet/receipts", s.crawlerReceipts)

@@ -138,7 +138,14 @@ func (s *MemoryReceiptStore) List(f ReceiptFilter) ([]Receipt, error) {
 		}
 	}
 	s.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp > out[j].Timestamp })
+	// The nonce tiebreaker keeps pagination deterministic when timestamps
+	// collide; offset paging over an unstable order can skip or repeat rows.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Timestamp != out[j].Timestamp {
+			return out[i].Timestamp > out[j].Timestamp
+		}
+		return out[i].Nonce < out[j].Nonce
+	})
 	return page(out, f.Offset, f.Limit), nil
 }
 

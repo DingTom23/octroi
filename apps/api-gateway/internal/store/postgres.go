@@ -189,7 +189,7 @@ func scanReceipt(row interface {
 
 func (s *pgReceipts) List(f ReceiptFilter) ([]Receipt, error) {
 	where, args := receiptWhere(f)
-	q := `SELECT ` + receiptColumns + ` FROM receipts` + where + ` ORDER BY issued_at DESC`
+	q := `SELECT ` + receiptColumns + ` FROM receipts` + where + ` ORDER BY issued_at DESC, nonce ASC`
 	q += limitOffset(&args, f.Limit, f.Offset)
 	rows, err := s.pool.Query(context.Background(), q, args...)
 	if err != nil {
